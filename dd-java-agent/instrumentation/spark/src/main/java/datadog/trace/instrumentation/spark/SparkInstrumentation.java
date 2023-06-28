@@ -35,6 +35,7 @@ public class SparkInstrumentation extends Instrumenter.Tracing
       packageName + ".DatadogSparkListener",
       packageName + ".SparkAggregatedTaskMetrics",
       packageName + ".SparkConfAllowList",
+      packageName + ".SparkMetricQuantiles",
     };
   }
 

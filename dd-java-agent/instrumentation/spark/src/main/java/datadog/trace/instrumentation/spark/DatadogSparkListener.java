@@ -253,9 +253,11 @@ public class DatadogSparkListener extends SparkListener {
     }
 
     long stageSpanKey = stageSpanKey(stageId, stageAttemptId);
+    long currentAvailableExecutorTime = computeCurrentAvailableExecutorTime(submissionTimeMs);
     stageMetrics.put(
         stageSpanKey,
-        new SparkAggregatedTaskMetrics(computeCurrentAvailableExecutorTime(submissionTimeMs)));
+        new SparkAggregatedTaskMetrics(
+            currentAvailableExecutorTime, stageSubmitted.stageInfo().numTasks()));
 
     AgentSpan stageSpan =
         buildSparkSpan("spark.stage")
@@ -314,6 +316,7 @@ public class DatadogSparkListener extends SparkListener {
 
     SparkAggregatedTaskMetrics stageMetric = stageMetrics.remove(stageSpanKey);
     if (stageMetric != null) {
+      stageMetric.computeMetricQuantiles();
       stageMetric.setSpanMetrics(span, "spark_stage_metrics");
       applicationMetrics.accumulateStageMetrics(stageMetric);
 

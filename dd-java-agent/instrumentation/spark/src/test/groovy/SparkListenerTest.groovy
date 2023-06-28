@@ -68,13 +68,13 @@ class SparkListenerTest extends AgentTestRunner {
       )
   }
 
-  private createStageInfo(Integer stageId) {
+  private createStageInfo(Integer stageId, Integer numTasks = 0) {
     if (TestSparkComputation.getSparkVersion() < "3") {
       return new StageInfo(
         stageId,
         0,
         "stage_name",
-        0,
+        numTasks,
         JavaConverters.asScalaBuffer([]).toSeq() as Seq<RDDInfo>,
         JavaConverters.asScalaBuffer([]).toSeq() as Seq<Integer>,
         "stage_details",
@@ -104,8 +104,8 @@ class SparkListenerTest extends AgentTestRunner {
     return new SparkListenerJobEnd(jobId, time, JobSucceeded$.MODULE$)
   }
 
-  private stageSubmittedEvent(Integer stageId, Long time) {
-    def stageInfo = createStageInfo(stageId)
+  private stageSubmittedEvent(Integer stageId, Long time, Integer numTasks = 0) {
+    def stageInfo = createStageInfo(stageId, numTasks)
     stageInfo.submissionTime = Option.apply(time)
 
     return new SparkListenerStageSubmitted(stageInfo, null)
@@ -286,6 +286,66 @@ class SparkListenerTest extends AgentTestRunner {
           assert span.tags["spark_stage_metrics.executor_run_time"] == 100L
           assert span.tags["spark_stage_metrics.executor_deserialize_time"] == 100L
           assert span.tags["spark_stage_metrics.result_serialization_time"] == 0L
+          spanType "spark"
+          childOf(span(1))
+        }
+      }
+    }
+  }
+
+  def "compute task metrics quantiles"() {
+    setup:
+    def listener = getTestDatadogSparkListener()
+
+    listener.onApplicationStart(applicationStartEvent(1000L))
+    listener.onJobStart(jobStartEvent(1, 1900L, [1, 2]))
+
+    listener.onStageSubmitted(stageSubmittedEvent(1, 1900L, 4))
+    listener.onTaskEnd(taskEndEvent(1, 1900L, 100L))
+    listener.onTaskEnd(taskEndEvent(1, 1900L, 200L))
+    listener.onTaskEnd(taskEndEvent(1, 1900L, 200L))
+    listener.onTaskEnd(taskEndEvent(1, 1900L, 300L))
+    listener.onStageCompleted(stageCompletedEvent(1, 2200L))
+
+    listener.onStageSubmitted(stageSubmittedEvent(2, 2200L, 15000))
+    for(int i = 1; i <= 15000; i++) {
+      listener.onTaskEnd(taskEndEvent(2, 2200L, i))
+    }
+
+    listener.onStageCompleted(stageCompletedEvent(2, 17200L))
+    listener.onJobEnd(jobEndEvent(1, 17200L))
+    listener.onApplicationEnd(new SparkListenerApplicationEnd(3100L))
+
+    assertTraces(1) {
+      trace(4) {
+        span {
+          operationName "spark.application"
+          assert span.tags["spark_application_metrics.skew_time"] == 5099L
+          spanType "spark"
+        }
+        span {
+          operationName "spark.job"
+          spanType "spark"
+          assert span.tags["spark_job_metrics.skew_time"] == 5099L
+          childOf(span(0))
+        }
+        span {
+          operationName "spark.stage"
+          assert span.tags["stage_id"] == 2
+          assert span.tags["spark_stage_metrics.task_duration_quantiles.min"] == 5001L
+          assert span.tags["spark_stage_metrics.task_duration_quantiles.p50"] == 10001L
+          assert span.tags["spark_stage_metrics.task_duration_quantiles.max"] == 15000L
+          assert span.tags["spark_stage_metrics.skew_time"] == 4999L
+          spanType "spark"
+          childOf(span(1))
+        }
+        span {
+          operationName "spark.stage"
+          assert span.tags["stage_id"] == 1
+          assert span.tags["spark_stage_metrics.task_duration_quantiles.min"] == 100L
+          assert span.tags["spark_stage_metrics.task_duration_quantiles.p50"] == 200L
+          assert span.tags["spark_stage_metrics.task_duration_quantiles.max"] == 300L
+          assert span.tags["spark_stage_metrics.skew_time"] == 100L
           spanType "spark"
           childOf(span(1))
         }

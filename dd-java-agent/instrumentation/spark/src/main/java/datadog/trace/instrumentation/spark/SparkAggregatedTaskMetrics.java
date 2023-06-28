@@ -43,10 +43,29 @@ class SparkAggregatedTaskMetrics {
   private long taskRunTimeSinceLastStage = 0L;
   private long totalTaskRunTimeSinceLastStage = 0L;
 
-  public SparkAggregatedTaskMetrics() {}
+  private long skewTime = 0;
+  private final SparkMetricQuantiles taskDurationQuantiles;
+  private final SparkMetricQuantiles inputBytesQuantiles;
+  private final SparkMetricQuantiles outputBytesQuantiles;
+  private final SparkMetricQuantiles shuffleReadBytesQuantiles;
+  private final SparkMetricQuantiles shuffleWriteBytesQuantiles;
 
-  public SparkAggregatedTaskMetrics(long availableExecutorTime) {
+  public SparkAggregatedTaskMetrics() {
+    taskDurationQuantiles = null;
+    inputBytesQuantiles = null;
+    outputBytesQuantiles = null;
+    shuffleReadBytesQuantiles = null;
+    shuffleWriteBytesQuantiles = null;
+  }
+
+  public SparkAggregatedTaskMetrics(long availableExecutorTime, int numTasks) {
     this.previousAvailableExecutorTime = availableExecutorTime;
+
+    taskDurationQuantiles = new SparkMetricQuantiles(numTasks);
+    inputBytesQuantiles = new SparkMetricQuantiles(numTasks);
+    outputBytesQuantiles = new SparkMetricQuantiles(numTasks);
+    shuffleReadBytesQuantiles = new SparkMetricQuantiles(numTasks);
+    shuffleWriteBytesQuantiles = new SparkMetricQuantiles(numTasks);
   }
 
   public void addTaskMetrics(SparkListenerTaskEnd taskEnd) {
@@ -94,7 +113,24 @@ class SparkAggregatedTaskMetrics {
         taskWithOutputCount += 1;
       }
 
-      taskRunTimeSinceLastStage += computeTaskRunTime(taskMetrics);
+      long taskRunTime = computeTaskRunTime(taskMetrics);
+      taskRunTimeSinceLastStage += taskRunTime;
+
+      if (taskDurationQuantiles != null) {
+        taskDurationQuantiles.measure(taskRunTime);
+      }
+      if (inputBytesQuantiles != null) {
+        inputBytesQuantiles.measure(taskMetrics.inputMetrics().bytesRead());
+      }
+      if (outputBytesQuantiles != null) {
+        outputBytesQuantiles.measure(taskMetrics.outputMetrics().bytesWritten());
+      }
+      if (shuffleReadBytesQuantiles != null) {
+        shuffleReadBytesQuantiles.measure(taskMetrics.shuffleReadMetrics().totalBytesRead());
+      }
+      if (shuffleWriteBytesQuantiles != null) {
+        shuffleWriteBytesQuantiles.measure(taskMetrics.shuffleWriteMetrics().bytesWritten());
+      }
     }
   }
 
@@ -115,6 +151,26 @@ class SparkAggregatedTaskMetrics {
     previousAvailableExecutorTime = availableExecutorTime;
     taskRunTimeSinceLastStage = 0;
     totalTaskRunTimeSinceLastStage = 0;
+  }
+
+  public void computeMetricQuantiles() {
+    if (taskDurationQuantiles != null) {
+      taskDurationQuantiles.computeQuantiles();
+      skewTime =
+          taskDurationQuantiles.getMaxValue() - taskDurationQuantiles.getValueAtQuantile(0.5);
+    }
+    if (inputBytesQuantiles != null) {
+      inputBytesQuantiles.computeQuantiles();
+    }
+    if (outputBytesQuantiles != null) {
+      outputBytesQuantiles.computeQuantiles();
+    }
+    if (shuffleReadBytesQuantiles != null) {
+      shuffleReadBytesQuantiles.computeQuantiles();
+    }
+    if (shuffleWriteBytesQuantiles != null) {
+      shuffleWriteBytesQuantiles.computeQuantiles();
+    }
   }
 
   public void accumulateStageMetrics(SparkAggregatedTaskMetrics stageMetrics) {
@@ -151,6 +207,7 @@ class SparkAggregatedTaskMetrics {
     taskWithOutputCount += stageMetrics.taskWithOutputCount;
 
     attributedAvailableExecutorTime += stageMetrics.attributedAvailableExecutorTime;
+    skewTime += stageMetrics.skewTime;
   }
 
   public void setSpanMetrics(AgentSpan span, String prefix) {
@@ -187,6 +244,23 @@ class SparkAggregatedTaskMetrics {
     span.setMetric(prefix + ".task_with_output_count", taskWithOutputCount);
 
     span.setMetric(prefix + ".available_executor_time", attributedAvailableExecutorTime);
+    span.setMetric(prefix + ".skew_time", skewTime);
+
+    if (taskDurationQuantiles != null) {
+      taskDurationQuantiles.setSpanMetrics(span, prefix + ".task_duration");
+    }
+    if (inputBytesQuantiles != null) {
+      inputBytesQuantiles.setSpanMetrics(span, prefix + ".input_bytes");
+    }
+    if (outputBytesQuantiles != null) {
+      outputBytesQuantiles.setSpanMetrics(span, prefix + ".output_bytes");
+    }
+    if (shuffleReadBytesQuantiles != null) {
+      shuffleReadBytesQuantiles.setSpanMetrics(span, prefix + ".shuffle_read_bytes");
+    }
+    if (shuffleWriteBytesQuantiles != null) {
+      shuffleWriteBytesQuantiles.setSpanMetrics(span, prefix + ".shuffle_write_bytes");
+    }
   }
 
   public static long computeTaskRunTime(TaskMetrics metrics) {
