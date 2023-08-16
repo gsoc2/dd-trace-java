@@ -18,13 +18,17 @@ import org.apache.spark.ExceptionFailure;
 import org.apache.spark.SparkConf;
 import org.apache.spark.TaskFailedReason;
 import org.apache.spark.scheduler.*;
+import org.apache.spark.sql.execution.SQLExecution;
 import org.apache.spark.sql.execution.streaming.MicroBatchExecution;
 import org.apache.spark.sql.execution.streaming.StreamExecution;
+import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionEnd;
+import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart;
 import org.apache.spark.sql.streaming.SourceProgress;
 import org.apache.spark.sql.streaming.StateOperatorProgress;
 import org.apache.spark.sql.streaming.StreamingQueryListener;
 import org.apache.spark.sql.streaming.StreamingQueryProgress;
 import scala.Tuple2;
+import scala.collection.JavaConverters;
 
 /**
  * Implementation of the SparkListener {@link org.apache.spark.scheduler.SparkListener} to generate
@@ -49,6 +53,7 @@ public class DatadogSparkListener extends SparkListener {
   private AgentSpan applicationSpan;
   private SparkListenerApplicationStart applicationStart;
   private final HashMap<String, AgentSpan> streamingBatchSpans = new HashMap<>();
+  private final HashMap<Long, AgentSpan> sqlSpans = new HashMap<>();
   private final HashMap<Integer, AgentSpan> jobSpans = new HashMap<>();
   private final HashMap<Long, AgentSpan> stageSpans = new HashMap<>();
 
@@ -57,12 +62,15 @@ public class DatadogSparkListener extends SparkListener {
 
   private final SparkAggregatedTaskMetrics applicationMetrics = new SparkAggregatedTaskMetrics();
   private final HashMap<String, SparkAggregatedTaskMetrics> streamingBatchMetrics = new HashMap<>();
+  private final HashMap<Long, SparkAggregatedTaskMetrics> sqlMetrics = new HashMap<>();
   private final HashMap<Integer, SparkAggregatedTaskMetrics> jobMetrics = new HashMap<>();
   private final HashMap<Long, SparkAggregatedTaskMetrics> stageMetrics = new HashMap<>();
 
   private final HashMap<UUID, StreamingQueryListener.QueryStartedEvent> streamingQueries =
       new HashMap<>();
+  private final HashMap<Long, SparkListenerSQLExecutionStart> sqlQueries = new HashMap<>();
   private final HashMap<String, SparkListenerExecutorAdded> liveExecutors = new HashMap<>();
+  private final HashMap<Long, SparkSQLUtils.EnrichedAccumulator> accumulators = new HashMap<>();
 
   private final boolean isRunningOnDatabricks;
 
@@ -167,6 +175,91 @@ public class DatadogSparkListener extends SparkListener {
     applicationSpan.finish(time * 1000);
   }
 
+  private void addDatabricksSpecificTags(AgentTracer.SpanBuilder builder, Properties properties) {
+    // In databricks, the spark jobs are the local root spans so adding the spark conf parameters
+    // to the job spans
+    for (Tuple2<String, String> conf : sparkConf.getAll()) {
+      if (SparkConfAllowList.canCaptureApplicationParameter(conf._1)) {
+        builder.withTag("config." + conf._1.replace(".", "_"), conf._2);
+      }
+    }
+
+    if (properties != null) {
+      String databricksJobId = (String) properties.get("spark.databricks.job.id");
+      String databricksJobRunId = getDatabricksJobRunId(properties);
+
+      // spark.databricks.job.runId is the runId of the task, not of the Job
+      String databricksTaskRunId = (String) properties.get("spark.databricks.job.runId");
+
+      // ids to link those spans to databricks job/task traces
+      builder.withTag("databricks_job_id", databricksJobId);
+      builder.withTag("databricks_job_run_id", databricksJobRunId);
+      builder.withTag("databricks_task_run_id", databricksTaskRunId);
+
+      AgentSpan.Context parentContext =
+          new DatabricksParentContext(databricksJobId, databricksJobRunId, databricksTaskRunId);
+
+      if (parentContext.getTraceId() != DDTraceId.ZERO) {
+        builder.asChildOf(parentContext);
+      }
+    }
+  }
+
+  private AgentSpan getOrCreateStreamingBatchSpan(String batchKey, Long startTimeMs) {
+    AgentSpan batchSpan = streamingBatchSpans.get(batchKey);
+
+    if (batchSpan == null) {
+      batchSpan = buildSparkSpan("spark.batch").withStartTimestamp(startTimeMs * 1000).start();
+
+      streamingBatchSpans.put(batchKey, batchSpan);
+    }
+
+    return batchSpan;
+  }
+
+  private AgentSpan getOrCreateSqlSpan(
+      long sqlExecutionId, String batchKey, Properties jobProperties) {
+    AgentSpan span = sqlSpans.get(sqlExecutionId);
+    if (span != null) {
+      return span;
+    }
+
+    SparkListenerSQLExecutionStart queryStart = sqlQueries.get(sqlExecutionId);
+    if (queryStart == null) {
+      return null;
+    }
+
+    AgentTracer.SpanBuilder spanBuilder =
+        buildSparkSpan("spark.sql")
+            .withStartTimestamp(queryStart.time() * 1000)
+            .withTag("query_id", sqlExecutionId)
+            .withTag("config.spark_version", sparkVersion)
+            .withTag(DDTags.RESOURCE_NAME, queryStart.description());
+
+    /*-
+     * Here is the schema of spark.sql span hierarchy depending on the setup:
+     *
+     * [spark.application]  [databricks.task] depending on the environment where spark is running
+     *             \           /
+     *             [spark.batch] optional, only present if using spark streaming
+     *                   |
+     *               spark.sql
+     */
+    if (batchKey != null) {
+      AgentSpan batchSpan = getOrCreateStreamingBatchSpan(batchKey, queryStart.time());
+      spanBuilder.asChildOf(batchSpan.context());
+    } else if (isRunningOnDatabricks) {
+      addDatabricksSpecificTags(spanBuilder, jobProperties);
+    } else {
+      initApplicationSpanIfNotInitialized();
+      spanBuilder.asChildOf(applicationSpan.context());
+    }
+
+    AgentSpan sqlSpan = spanBuilder.start();
+    sqlSpans.put(sqlExecutionId, sqlSpan);
+    return sqlSpan;
+  }
+
   @Override
   public synchronized void onJobStart(SparkListenerJobStart jobStart) {
     jobCount++;
@@ -181,48 +274,31 @@ public class DatadogSparkListener extends SparkListener {
             .withTag("stage_count", jobStart.stageInfos().size());
 
     String batchKey = getStreamingBatchKey(jobStart.properties());
+    Long sqlExecutionId = getSqlExecutionId(jobStart.properties());
+    AgentSpan sqlSpan = null;
 
-    if (batchKey != null) {
-      AgentSpan batchSpan = streamingBatchSpans.get(batchKey);
+    if (sqlExecutionId != null) {
+      sqlSpan = getOrCreateSqlSpan(sqlExecutionId, batchKey, jobStart.properties());
+    }
 
-      if (batchSpan == null) {
-        batchSpan =
-            buildSparkSpan("spark.batch").withStartTimestamp(jobStart.time() * 1000).start();
-
-        streamingBatchSpans.put(batchKey, batchSpan);
-      }
-
-      // In streaming mode, the batch spans are the local root spans
+    /*-
+     * Here is the schema of spark.job span hierarchy depending on the setup:
+     *
+     * [spark.application]  [databricks.task] depending on the environment where spark is running
+     *             \           /
+     *             [spark.batch] optional, only present if using spark streaming
+     *                   |
+     *              [spark.sql] optional, only present if using spark-sql
+     *                   |
+     *               spark.job
+     */
+    if (sqlSpan != null) {
+      jobSpanBuilder.asChildOf(sqlSpan.context());
+    } else if (batchKey != null) {
+      AgentSpan batchSpan = getOrCreateStreamingBatchSpan(batchKey, jobStart.time());
       jobSpanBuilder.asChildOf(batchSpan.context());
     } else if (isRunningOnDatabricks) {
-      // In databricks, the spark jobs are the local root spans so adding the spark conf parameters
-      // to the job spans
-      for (Tuple2<String, String> conf : sparkConf.getAll()) {
-        if (SparkConfAllowList.canCaptureApplicationParameter(conf._1)) {
-          jobSpanBuilder.withTag("config." + conf._1.replace(".", "_"), conf._2);
-        }
-      }
-
-      if (jobStart.properties() != null) {
-        String databricksJobId = (String) jobStart.properties().get("spark.databricks.job.id");
-        String databricksJobRunId = getDatabricksJobRunId(jobStart.properties());
-
-        // spark.databricks.job.runId is the runId of the task, not of the Job
-        String databricksTaskRunId =
-            (String) jobStart.properties().get("spark.databricks.job.runId");
-
-        // ids to link those spans to databricks job/task traces
-        jobSpanBuilder.withTag("databricks_job_id", databricksJobId);
-        jobSpanBuilder.withTag("databricks_job_run_id", databricksJobRunId);
-        jobSpanBuilder.withTag("databricks_task_run_id", databricksTaskRunId);
-
-        AgentSpan.Context parentContext =
-            new DatabricksParentContext(databricksJobId, databricksJobRunId, databricksTaskRunId);
-
-        if (parentContext.getTraceId() != DDTraceId.ZERO) {
-          jobSpanBuilder.asChildOf(parentContext);
-        }
-      }
+      addDatabricksSpecificTags(jobSpanBuilder, jobStart.properties());
     } else {
       // In non-databricks, non-streaming env, the spark application is the local root span
       initApplicationSpanIfNotInitialized();
@@ -371,6 +447,13 @@ public class DatadogSparkListener extends SparkListener {
       metric.allocateAvailableExecutorTime(currentAvailableExecutorTime);
     }
 
+    for (AccumulableInfo info :
+        JavaConverters.asJavaCollection(stageInfo.accumulables().values())) {
+      SparkSQLUtils.EnrichedAccumulator enrichedAccumulator =
+          new SparkSQLUtils.EnrichedAccumulator(info, stageId);
+      accumulators.put(info.id(), enrichedAccumulator);
+    }
+
     SparkAggregatedTaskMetrics stageMetric = stageMetrics.remove(stageSpanKey);
     if (stageMetric != null) {
       stageMetric.computeSkew();
@@ -387,6 +470,13 @@ public class DatadogSparkListener extends SparkListener {
       if (batchKey != null) {
         streamingBatchMetrics
             .computeIfAbsent(batchKey, k -> new SparkAggregatedTaskMetrics())
+            .accumulateStageMetrics(stageMetric);
+      }
+
+      Long sqlExecutionId = getSqlExecutionId(prop);
+      if (sqlExecutionId != null) {
+        sqlMetrics
+            .computeIfAbsent(sqlExecutionId, k -> new SparkAggregatedTaskMetrics())
             .accumulateStageMetrics(stageMetric);
       }
     }
@@ -500,6 +590,31 @@ public class DatadogSparkListener extends SparkListener {
       onStreamingQueryProgressEvent((StreamingQueryListener.QueryProgressEvent) event);
     } else if (event instanceof StreamingQueryListener.QueryTerminatedEvent) {
       onStreamingQueryTerminatedEvent((StreamingQueryListener.QueryTerminatedEvent) event);
+    } else if (event instanceof SparkListenerSQLExecutionStart) {
+      onSQLExecutionStart((SparkListenerSQLExecutionStart) event);
+    } else if (event instanceof SparkListenerSQLExecutionEnd) {
+      onSQLExecutionEnd((SparkListenerSQLExecutionEnd) event);
+    }
+  }
+
+  private synchronized void onSQLExecutionStart(SparkListenerSQLExecutionStart sqlStart) {
+    sqlQueries.put(sqlStart.executionId(), sqlStart);
+  }
+
+  private synchronized void onSQLExecutionEnd(SparkListenerSQLExecutionEnd sqlEnd) {
+    AgentSpan span = sqlSpans.remove(sqlEnd.executionId());
+    SparkAggregatedTaskMetrics metrics = sqlMetrics.remove(sqlEnd.executionId());
+    SparkListenerSQLExecutionStart query = sqlQueries.remove(sqlEnd.executionId());
+
+    if (span != null) {
+      if (metrics != null) {
+        metrics.setSpanMetrics(span, "spark");
+      }
+      if (query != null) {
+        SparkSQLUtils.addSQLPlanToSpan(span, query.sparkPlanInfo(), accumulators);
+      }
+
+      span.finish(sqlEnd.time() * 1000);
     }
   }
 
@@ -706,6 +821,23 @@ public class DatadogSparkListener extends SparkListener {
     try {
       return OffsetDateTime.parse(isoUtcDateStr).toInstant().toEpochMilli();
     } catch (DateTimeParseException e) {
+      return null;
+    }
+  }
+
+  private static Long getSqlExecutionId(Properties properties) {
+    if (properties == null) {
+      return null;
+    }
+
+    Object sqlExecutionId = properties.get(SQLExecution.EXECUTION_ID_KEY());
+    if (sqlExecutionId == null) {
+      return null;
+    }
+
+    try {
+      return Long.parseLong((String) sqlExecutionId);
+    } catch (NumberFormatException e) {
       return null;
     }
   }
