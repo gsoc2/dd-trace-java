@@ -76,7 +76,7 @@ class SparkListenerTest extends AgentTestRunner {
       return new StageInfo(
         stageId,
         0,
-        "stage_name",
+        "stage_name_" + stageId.toString(),
         0,
         JavaConverters.asScalaBuffer([]).toSeq() as Seq<RDDInfo>,
         JavaConverters.asScalaBuffer([]).toSeq() as Seq<Integer>,
@@ -89,7 +89,7 @@ class SparkListenerTest extends AgentTestRunner {
     return new StageInfo(
       stageId,
       0,
-      "stage_name",
+      "stage_name_" + stageId.toString(),
       0,
       JavaConverters.asScalaBuffer([]).toSeq() as Seq<RDDInfo>,
       JavaConverters.asScalaBuffer([]).toSeq() as Seq<Integer>,
@@ -458,5 +458,17 @@ class SparkListenerTest extends AgentTestRunner {
     validateRelativeError(sketch.getValueAtQuantile(0.5), expectedP50, relativeAccuracy)
     validateRelativeError(sketch.getValueAtQuantile(0.75), expectedP75, relativeAccuracy)
     validateRelativeError(sketch.getMaxValue(), expectedMax, relativeAccuracy)
+  }
+
+  def "compute spark job name based on the last stage, regardless of the order in stageInfos"() {
+    setup:
+    def jobStart = jobStartEvent(1, 1000, [2, 3, 1])
+    def jobStartEmpty = jobStartEvent(2, 1000, [])
+
+    expect:
+    assert DatadogSparkListener.getSparkJobName(jobStart) == "stage_name_3"
+    assert jobStart.stageInfos().last().name() == "stage_name_1"
+
+    assert DatadogSparkListener.getSparkJobName(jobStartEmpty) == null
   }
 }

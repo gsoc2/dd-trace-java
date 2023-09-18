@@ -10,6 +10,7 @@ import java.io.StringWriter;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -28,6 +29,8 @@ import org.apache.spark.sql.streaming.StateOperatorProgress;
 import org.apache.spark.sql.streaming.StreamingQueryListener;
 import org.apache.spark.sql.streaming.StreamingQueryProgress;
 import scala.Tuple2;
+
+import scala.collection.JavaConverters;
 
 /**
  * Implementation of the SparkListener {@link org.apache.spark.scheduler.SparkListener} to generate
@@ -302,10 +305,7 @@ public class DatadogSparkListener extends SparkListener {
       jobSpanBuilder.asChildOf(applicationSpan.context());
     }
 
-    if (jobStart.stageInfos().nonEmpty()) {
-      // In the spark UI, the name of a job is the name of its last stage
-      jobSpanBuilder.withTag(DDTags.RESOURCE_NAME, jobStart.stageInfos().last().name());
-    }
+    jobSpanBuilder.withTag(DDTags.RESOURCE_NAME, getSparkJobName(jobStart));
 
     // Some properties can change at runtime, so capturing properties of all jobs
     captureJobParameters(jobSpanBuilder, jobStart.properties());
@@ -869,5 +869,20 @@ public class DatadogSparkListener extends SparkListener {
 
   private static String getBatchIdFromBatchKey(String batchKey) {
     return batchKey.substring(batchKey.lastIndexOf(".") + 1);
+  }
+
+  public static String getSparkJobName(SparkListenerJobStart jobStart) {
+    String lastStageName = null;
+    int maxStageId = -1;
+
+    // In the spark UI, the name of a job is the name of its last stage
+    for (StageInfo stageInfo : JavaConverters.seqAsJavaList(jobStart.stageInfos())) {
+      if (stageInfo.stageId() > maxStageId) {
+        maxStageId = stageInfo.stageId();
+        lastStageName = stageInfo.name();
+      }
+    }
+
+    return lastStageName;
   }
 }
