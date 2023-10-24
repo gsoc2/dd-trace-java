@@ -41,7 +41,8 @@ class LocationsCollectingTransformer implements ClassFileTransformer {
     final ClassLoader classLoader = domain.getClassLoader();
     log.debug("New protection domain with location {} and class loader {}", location, classLoader);
     if (location != null) {
-      dependencyService.addURL(location);
+      dependencyService.add(DependencyPath.forURL(location));
+      return true;
     }
     return true;
   }

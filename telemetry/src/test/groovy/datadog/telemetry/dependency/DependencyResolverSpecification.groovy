@@ -170,24 +170,23 @@ class DependencyResolverSpecification extends DepSpecification {
     DependencyResolver.extractDependenciesFromJar(temp).isEmpty()
   }
 
-  void 'try to determine invalid jar lib'() throws IOException {
+  void 'try to determine invalid nested jar lib'() throws IOException {
     setup:
     File temp = File.createTempFile('temp', '.jar')
     temp.write("just a text file")
 
     expect:
-    DependencyResolver.getNestedDependency(temp.toURI()) == null
+    DependencyResolver.getNestedDependency(temp.getAbsolutePath()) == null
   }
 
   void 'spring boot dependency'() throws IOException {
-    setup:
+    given:
     org.springframework.boot.loader.jar.JarFile.registerUrlProtocolHandler()
+    def zipPath = Classloader.classLoader.getResource('datadog/telemetry/dependencies/spring-boot-app.jar').path
+    def path = DependencyPath.forURL(new URL("jar:file:$zipPath!/BOOT-INF/lib/opentracing-util-0.33.0.jar!/"))
 
     when:
-    String zipPath = Classloader.classLoader.getResource('datadog/telemetry/dependencies/spring-boot-app.jar').path
-    URI uri = new URI("jar:file:$zipPath!/BOOT-INF/lib/opentracing-util-0.33.0.jar!/")
-
-    Dependency dep = DependencyResolver.resolve(uri).get(0)
+    Dependency dep = DependencyResolver.resolve(path).get(0)
 
     then:
     dep != null
@@ -198,26 +197,26 @@ class DependencyResolverSpecification extends DepSpecification {
   }
 
   void 'fat jar with multiple pom.properties'() throws IOException {
-    setup:
+    given:
     org.springframework.boot.loader.jar.JarFile.registerUrlProtocolHandler()
+    def url = Classloader.classLoader.getResource('datadog/telemetry/dependencies/budgetapp.jar')
+    def path = DependencyPath.forURL(url)
 
     when:
-    URI uri = Classloader.classLoader.getResource('datadog/telemetry/dependencies/budgetapp.jar').toURI()
-
-    List<Dependency> deps = DependencyResolver.resolve(uri)
+    List<Dependency> deps = DependencyResolver.resolve(path)
 
     then:
     deps.size() == 105
   }
 
   void 'fat jar with two pom.properties'() throws IOException {
-    setup:
+    given:
     org.springframework.boot.loader.jar.JarFile.registerUrlProtocolHandler()
+    def url = Classloader.classLoader.getResource('datadog/telemetry/dependencies/budgetappreduced.jar')
+    def path = DependencyPath.forURL(url)
 
     when:
-    URI uri = Classloader.classLoader.getResource('datadog/telemetry/dependencies/budgetappreduced.jar').toURI()
-
-    List<Dependency> deps = DependencyResolver.resolve(uri)
+    List<Dependency> deps = DependencyResolver.resolve(path)
     Dependency dep1 = deps.get(0)
     Dependency dep2 = deps.get(1)
 
@@ -227,13 +226,13 @@ class DependencyResolverSpecification extends DepSpecification {
   }
 
   void 'fat jar with two pom.properties one of them bad'() throws IOException {
-    setup:
+    given:
     org.springframework.boot.loader.jar.JarFile.registerUrlProtocolHandler()
+    def url = Classloader.classLoader.getResource('datadog/telemetry/dependencies/budgetappreducedbadproperties.jar')
+    def path = DependencyPath.forURL(url)
 
     when:
-    URI uri = Classloader.classLoader.getResource('datadog/telemetry/dependencies/budgetappreducedbadproperties.jar').toURI()
-
-    List<Dependency> deps = DependencyResolver.resolve(uri)
+    List<Dependency> deps = DependencyResolver.resolve(path)
     Dependency dep1 = deps.get(0)
 
     then:

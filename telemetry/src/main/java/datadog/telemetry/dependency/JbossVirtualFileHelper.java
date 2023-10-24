@@ -7,7 +7,6 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Field;
 import java.lang.reflect.UndeclaredThrowableException;
-import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import org.slf4j.Logger;
@@ -70,7 +69,16 @@ public class JbossVirtualFileHelper {
     }
   }
 
-  public static URI getJbossVfsPath(URL location) {
+  public static String getJbossVfsPath(URL location) {
+    try {
+      return doGetJbossVfsPath(location);
+    } catch (RuntimeException rte) {
+      log.debug("Error in call to getJbossVfsPath", rte);
+      return null;
+    }
+  }
+
+  private static String doGetJbossVfsPath(URL location) {
     JbossVirtualFileHelper jbossVirtualFileHelper = JbossVirtualFileHelper.jbossVirtualFileHelper;
     if (jbossVirtualFileHelper == JbossVirtualFileHelper.FAILED_HELPER) {
       return null;
@@ -103,7 +111,7 @@ public class JbossVirtualFileHelper {
     // call VirtualFile.getPhysicalFile
     File physicalFile = jbossVirtualFileHelper.getPhysicalFile(virtualFile);
     if (physicalFile.isFile() && physicalFile.getName().endsWith(".jar")) {
-      return physicalFile.toURI();
+      return physicalFile.getAbsolutePath();
     } else {
       log.debug("Physical file {} is not a jar", physicalFile);
     }
@@ -116,7 +124,7 @@ public class JbossVirtualFileHelper {
     String fileName = jbossVirtualFileHelper.getName(virtualFile);
     physicalFile = new File(physicalFile.getParentFile(), fileName);
     if (physicalFile.isFile()) {
-      return physicalFile.toURI();
+      return physicalFile.getAbsolutePath();
     }
     return null;
   }

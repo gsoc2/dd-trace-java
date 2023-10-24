@@ -6,9 +6,9 @@ class DependencyResolverQueueSpecification extends DepSpecification {
 
   void 'resolve set of dependencies'() {
     when:
-    resolverQueue.queueURI(getJar('junit-4.12.jar').toURI())
-    resolverQueue.queueURI(getJar('asm-util-9.2.jar').toURI())
-    resolverQueue.queueURI(getJar('bson-4.2.0.jar').toURI())
+    resolverQueue.add(DependencyPath.forURL(getJar('junit-4.12.jar').toURL()))
+    resolverQueue.add(DependencyPath.forURL(getJar('asm-util-9.2.jar').toURL()))
+    resolverQueue.add(DependencyPath.forURL(getJar('bson-4.2.0.jar').toURL()))
 
     and:
     def dep = resolverQueue.pollDependency().get(0)
@@ -47,7 +47,7 @@ class DependencyResolverQueueSpecification extends DepSpecification {
     assert deps.isEmpty()
 
     when: 'a repeated dependency is added'
-    resolverQueue.queueURI(getJar('junit-4.12.jar').toURI())
+    resolverQueue.add(DependencyPath.forURL(getJar('junit-4.12.jar').toURL()))
     deps = resolverQueue.pollDependency()
 
     then: 'it has no effect'

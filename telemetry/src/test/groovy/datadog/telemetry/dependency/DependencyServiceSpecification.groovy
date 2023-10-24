@@ -13,7 +13,7 @@ import static org.junit.Assert.assertThat
 class DependencyServiceSpecification extends DepSpecification {
   DependencyService depService = new DependencyService()
 
-  void 'no uris pushed should result in empty list'() {
+  void 'no dependencies result in empty list'() {
     when:
     depService.resolveOneDependency()
 
@@ -22,79 +22,67 @@ class DependencyServiceSpecification extends DepSpecification {
     dependencies.isEmpty()
   }
 
-  void 'null uri results in NPE'() {
+  void 'null dependency is ignored'() {
     when:
-    depService.addURL(null)
+    depService.add(null)
 
     then:
-    thrown NullPointerException
+    def dependencies = depService.drainDeterminedDependencies()
+    dependencies.isEmpty()
   }
 
-  void 'class files are ignored as dependencies'() {
+  void 'add missing jar url dependency'() {
     when:
-    depService.addURL(new URL('file:///tmp/toto.class'))
+    def path = DependencyPath.forURL(new URL(url))
+    depService.add(path)
     depService.resolveOneDependency()
 
     then:
+    path != null
     depService.drainDeterminedDependencies().isEmpty()
-  }
 
-  void 'add missing jar url dependency'() throws URISyntaxException {
-    when:
-    // this URI comes from a spring-boot application
-    URL url = new URL('jar:file:/tmp//spring-petclinic-2.1.0.BUILD-SNAPSHOT.jar!/BOOT-INF/lib/spring-boot-2.1.0.BUILD-SNAPSHOT.jar!//')
-    depService.addURL(url)
-    depService.resolveOneDependency()
-
-    then:
-    depService.drainDeterminedDependencies().isEmpty()
+    where:
+    url                                                                                                              | _
+    'jar:file:/tmp//spring-petclinic-2.1.0.BUILD-SNAPSHOT.jar!/BOOT-INF/lib/spring-boot-2.1.0.BUILD-SNAPSHOT.jar!//' | _
+    'file:/C:/Program Files/IBM/WebSphere/AppServer_1/plugins/com.ibm.cds_2.1.0.jar'                                 | _
+    'jar:file:/Users/test/spring-petclinic.jar!/BOOT-INF/classes!/'                                                  | _
   }
 
   void 'invalid jar names are ignored'() {
     when:
-    depService.addURL(new File(".zip").toURL())
+    def url = new URL('file:/tmp/foo.zip')
+    def path = DependencyPath.forURL(url)
+    depService.add(path)
     depService.resolveOneDependency()
 
     then:
+    path != null
     depService.drainDeterminedDependencies().isEmpty()
   }
 
   void 'build dependency set from known jar'() {
     when:
-    File junitJar = getJar('junit-4.12.jar')
-
-    depService.addURL(new File(junitJar.getAbsolutePath()).toURL())
+    def junitJar = getJar('junit-4.12.jar')
+    def url = new File(junitJar.getAbsolutePath()).toURL()
+    def path = DependencyPath.forURL(url)
+    depService.add(path)
     depService.resolveOneDependency()
 
     then:
+    path != null
     def set = depService.drainDeterminedDependencies() as Set
     assertThat(set.size(), is(1))
-
     assertThat(set.first().name, is('junit'))
     assertThat(set.first().version, is('4.12'))
   }
 
-  void 'convertToURI works with a spaced URL'() {
-    when:
-    URI uri = depService.convertToURI(new URL("file:/C:/Program Files/IBM/WebSphere/AppServer_1/plugins/com.ibm.cds_2.1.0.jar"))
-
-    then:
-    uri.path == "/C:/Program Files/IBM/WebSphere/AppServer_1/plugins/com.ibm.cds_2.1.0.jar"
-  }
-
-  void 'convertToURI works with a nested URL'() {
-    when:
-    URI uri = depService.convertToURI(new URL("jar:file:/Users/test/spring-petclinic.jar!/BOOT-INF/classes!/"))
-
-    then:
-    uri.schemeSpecificPart == "file:/Users/test/spring-petclinic.jar!/BOOT-INF/classes!/"
-  }
-
   void 'build dependency set from a fat jar'() {
-    when:
-    File budgetappJar = getJar('budgetapp.jar')
+    given:
+    def budgetappJar = getJar('budgetapp.jar')
+    def path = DependencyPath.forURL(new File(budgetappJar.getAbsolutePath()).toURL())
 
-    depService.addURL(new File(budgetappJar.getAbsolutePath()).toURL())
+    when:
+    depService.add(path)
     depService.resolveOneDependency()
 
     then:
@@ -103,10 +91,12 @@ class DependencyServiceSpecification extends DepSpecification {
   }
 
   void 'build dependency set from a small fat jar'() {
-    when:
-    File budgetappJar = getJar('budgetappreduced.jar')
+    given:
+    def budgetappJar = getJar('budgetappreduced.jar')
+    def path = DependencyPath.forURL(new File(budgetappJar.getAbsolutePath()).toURL())
 
-    depService.addURL(new File(budgetappJar.getAbsolutePath()).toURL())
+    when:
+    depService.add(path)
     depService.resolveOneDependency()
 
     then:
@@ -119,10 +109,12 @@ class DependencyServiceSpecification extends DepSpecification {
   }
 
   void 'build dependency set from a small fat jar with one incorrect pom.properties'() {
-    when:
-    File budgetappJar = getJar('budgetappreducedbadproperties.jar')
+    given:
+    def budgetappJar = getJar('budgetappreducedbadproperties.jar')
+    def path = DependencyPath.forURL(new File(budgetappJar.getAbsolutePath()).toURL())
 
-    depService.addURL(new File(budgetappJar.getAbsolutePath()).toURL())
+    when:
+    depService.add(path)
     depService.resolveOneDependency()
 
     then:
