@@ -10,9 +10,12 @@ import datadog.trace.bootstrap.instrumentation.api.AgentTracer;
 import de.thetaphi.forbiddenapis.SuppressForbidden;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -22,6 +25,8 @@ import org.apache.spark.SparkConf;
 import org.apache.spark.TaskFailedReason;
 import org.apache.spark.scheduler.*;
 import org.apache.spark.sql.execution.SQLExecution;
+import org.apache.spark.sql.execution.SparkPlanInfo;
+import org.apache.spark.sql.execution.metric.SQLMetricInfo;
 import org.apache.spark.sql.execution.streaming.MicroBatchExecution;
 import org.apache.spark.sql.execution.streaming.StreamExecution;
 import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionEnd;
@@ -31,6 +36,7 @@ import org.apache.spark.sql.streaming.StateOperatorProgress;
 import org.apache.spark.sql.streaming.StreamingQueryListener;
 import org.apache.spark.sql.streaming.StreamingQueryProgress;
 import scala.Tuple2;
+import scala.collection.JavaConverters;
 
 /**
  * Implementation of the SparkListener {@link SparkListener} to generate spans from the execution of
@@ -72,7 +78,9 @@ public abstract class AbstractDatadogSparkListener extends SparkListener {
   private final HashMap<UUID, StreamingQueryListener.QueryStartedEvent> streamingQueries =
       new HashMap<>();
   private final HashMap<Long, SparkListenerSQLExecutionStart> sqlQueries = new HashMap<>();
+  protected final HashMap<Long, SparkPlanInfo> sqlPlans = new HashMap<>();
   private final HashMap<String, SparkListenerExecutorAdded> liveExecutors = new HashMap<>();
+  private final HashMap<Long, Integer> accumulatorToStage = new HashMap<>();
 
   private final boolean isRunningOnDatabricks;
   private final String databricksClusterName;
@@ -108,6 +116,12 @@ public abstract class AbstractDatadogSparkListener extends SparkListener {
 
   /** Stage count of the spark job. Provide an implementation based on a specific scala version */
   protected abstract int getStageCount(SparkListenerJobStart jobStart);
+
+  /** Children of a SparkPlanInfo. Provide an implementation based on a specific scala version */
+  protected abstract Collection<SparkPlanInfo> getPlanInfoChildren(SparkPlanInfo info);
+
+  /** Metrics of a SparkPlanInfo. Provide an implementation based on a specific scala version */
+  protected abstract Collection<SQLMetricInfo> getPlanInfoMetrics(SparkPlanInfo info);
 
   @Override
   public synchronized void onApplicationStart(SparkListenerApplicationStart applicationStart) {
@@ -445,7 +459,13 @@ public abstract class AbstractDatadogSparkListener extends SparkListener {
       metric.allocateAvailableExecutorTime(currentAvailableExecutorTime);
     }
 
+    for (AccumulableInfo info :
+        JavaConverters.asJavaCollection(stageInfo.accumulables().values())) {
+      accumulatorToStage.put(info.id(), stageId);
+    }
+
     SparkAggregatedTaskMetrics stageMetric = stageMetrics.remove(stageSpanKey);
+    Properties prop = stageProperties.remove(stageSpanKey);
     if (stageMetric != null) {
       stageMetric.computeSkew();
       stageMetric.setSpanMetrics(span);
@@ -455,9 +475,7 @@ public abstract class AbstractDatadogSparkListener extends SparkListener {
           .computeIfAbsent(jobId, k -> new SparkAggregatedTaskMetrics())
           .accumulateStageMetrics(stageMetric);
 
-      Properties prop = stageProperties.remove(stageSpanKey);
       String batchKey = getStreamingBatchKey(prop);
-
       if (batchKey != null) {
         streamingBatchMetrics
             .computeIfAbsent(batchKey, k -> new SparkAggregatedTaskMetrics())
@@ -470,6 +488,12 @@ public abstract class AbstractDatadogSparkListener extends SparkListener {
             .computeIfAbsent(sqlExecutionId, k -> new SparkAggregatedTaskMetrics())
             .accumulateStageMetrics(stageMetric);
       }
+    }
+
+    Long sqlQueryId = getSqlExecutionId(prop);
+    SparkPlanInfo sqlPlan = sqlPlans.get(sqlQueryId);
+    if (sqlPlan != null) {
+      SparkSQLUtils.addSQLPlanToStageSpan(span, sqlPlan, accumulatorToStage, stageId);
     }
 
     span.finish(completionTimeMs * 1000);
@@ -588,9 +612,37 @@ public abstract class AbstractDatadogSparkListener extends SparkListener {
     } else if (event instanceof SparkListenerSQLExecutionEnd) {
       onSQLExecutionEnd((SparkListenerSQLExecutionEnd) event);
     }
+
+    updateSqlPlanInfo(event);
+  }
+
+  private void updateSqlPlanInfo(SparkListenerEvent event) {
+    try {
+      // Using reflection to avoid splitting the instrumentation as
+      // SparkListenerSQLAdaptiveExecutionUpdate is only present since spark 3.0.0
+      Class<?> adaptiveExecutionUpdateClass =
+          Class.forName(
+              "org.apache.spark.sql.execution.ui.SparkListenerSQLAdaptiveExecutionUpdate");
+
+      if (adaptiveExecutionUpdateClass.isInstance(event)) {
+        Method executionIdMethod = adaptiveExecutionUpdateClass.getDeclaredMethod("executionId");
+        Method sparkPlanInfoMethod =
+            adaptiveExecutionUpdateClass.getDeclaredMethod("sparkPlanInfo");
+
+        long queryId = (long) executionIdMethod.invoke(event);
+        SparkPlanInfo sparkPlanInfo = (SparkPlanInfo) sparkPlanInfoMethod.invoke(event);
+
+        sqlPlans.put(queryId, sparkPlanInfo);
+      }
+    } catch (ClassNotFoundException
+        | NoSuchMethodException
+        | IllegalAccessException
+        | InvocationTargetException ignored) {
+    }
   }
 
   private synchronized void onSQLExecutionStart(SparkListenerSQLExecutionStart sqlStart) {
+    sqlPlans.put(sqlStart.executionId(), sqlStart.sparkPlanInfo());
     sqlQueries.put(sqlStart.executionId(), sqlStart);
   }
 
@@ -598,6 +650,7 @@ public abstract class AbstractDatadogSparkListener extends SparkListener {
     AgentSpan span = sqlSpans.remove(sqlEnd.executionId());
     SparkAggregatedTaskMetrics metrics = sqlMetrics.remove(sqlEnd.executionId());
     sqlQueries.remove(sqlEnd.executionId());
+    sqlPlans.remove(sqlEnd.executionId());
 
     if (span != null) {
       if (metrics != null) {

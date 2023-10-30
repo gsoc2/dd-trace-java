@@ -18,6 +18,8 @@ public class Spark212Instrumentation extends AbstractSparkInstrumentation {
       packageName + ".DatadogSpark212Listener",
       packageName + ".SparkAggregatedTaskMetrics",
       packageName + ".SparkConfAllowList",
+      packageName + ".SparkSQLUtils",
+      packageName + ".SparkSQLUtils$SparkPlanInfoForStage",
     };
   }
 
