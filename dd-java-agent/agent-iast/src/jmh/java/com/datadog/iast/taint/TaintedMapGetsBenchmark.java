@@ -28,7 +28,7 @@ import org.openjdk.jmh.infra.Blackhole;
 @State(Scope.Benchmark)
 public class TaintedMapGetsBenchmark {
 
-  private static final int INITIAL_OP_COUNT = TaintedMap.DEFAULT_FLAT_MODE_THRESHOLD;
+  private static final int INITIAL_OP_COUNT = TaintedMap.DEFAULT_CAPACITY << 1;
   private static final int OP_COUNT = 1024;
 
   private TaintedMap map;
@@ -37,18 +37,18 @@ public class TaintedMapGetsBenchmark {
 
   @Setup(Level.Iteration)
   public void setup() {
-    map = new TaintedMap();
+    map = TaintedMap.build();
     initialObjectList = new ArrayList<>(INITIAL_OP_COUNT);
     objectList = new ArrayList<>(OP_COUNT);
     for (int i = 0; i < INITIAL_OP_COUNT; i++) {
       final Object k = new Object();
       initialObjectList.add(k);
-      map.put(new TaintedObject(k, new Range[0], map.getReferenceQueue()));
+      map.put(new TaintedObject(k, new Range[0]));
     }
     for (int i = 0; i < OP_COUNT; i++) {
       final Object k = new Object();
       objectList.add(k);
-      map.put(new TaintedObject(k, new Range[0], map.getReferenceQueue()));
+      map.put(new TaintedObject(k, new Range[0]));
     }
   }
 

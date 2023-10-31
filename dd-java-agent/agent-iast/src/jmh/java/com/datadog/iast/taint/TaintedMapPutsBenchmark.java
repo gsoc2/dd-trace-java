@@ -31,7 +31,7 @@ import org.openjdk.jmh.infra.Blackhole;
 @State(Scope.Benchmark)
 public class TaintedMapPutsBenchmark {
 
-  private static final int INITIAL_OP_COUNT = TaintedMap.DEFAULT_FLAT_MODE_THRESHOLD;
+  private static final int INITIAL_OP_COUNT = TaintedMap.DEFAULT_CAPACITY << 1;
   private static final int OP_COUNT = 1024;
 
   private static final Range[] EMPTY_RANGES = new Range[0];
@@ -42,13 +42,13 @@ public class TaintedMapPutsBenchmark {
 
   @Setup(Level.Iteration)
   public void setup() {
-    map = new TaintedMap();
+    map = TaintedMap.build();
     objectBuffer = new CircularBuffer<>(OP_COUNT);
     initialObjectList = new ArrayList<>(INITIAL_OP_COUNT);
     for (int i = 0; i < INITIAL_OP_COUNT; i++) {
       final Object k = new Object();
       initialObjectList.add(k);
-      map.put(new TaintedObject(k, EMPTY_RANGES, map.getReferenceQueue()));
+      map.put(new TaintedObject(k, EMPTY_RANGES));
     }
   }
 
@@ -58,7 +58,7 @@ public class TaintedMapPutsBenchmark {
     for (int i = 0; i < OP_COUNT; i++) {
       final Object k = new Object();
       objectBuffer.add(k);
-      bh.consume(new TaintedObject(k, EMPTY_RANGES, map.getReferenceQueue()));
+      bh.consume(new TaintedObject(k, EMPTY_RANGES));
     }
   }
 
@@ -68,7 +68,7 @@ public class TaintedMapPutsBenchmark {
     for (int i = 0; i < OP_COUNT; i++) {
       final Object k = new Object();
       objectBuffer.add(k);
-      map.put(new TaintedObject(k, EMPTY_RANGES, map.getReferenceQueue()));
+      map.put(new TaintedObject(k, EMPTY_RANGES));
     }
   }
 }
