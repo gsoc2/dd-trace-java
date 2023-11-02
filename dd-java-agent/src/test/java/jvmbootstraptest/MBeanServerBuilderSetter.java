@@ -1,6 +1,7 @@
 package jvmbootstraptest;
 
 import java.lang.management.ManagementFactory;
+import java.util.Map;
 import java.util.Objects;
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
@@ -59,6 +60,17 @@ public class MBeanServerBuilderSetter {
           true,
           "jmxfetch should start in premain when no custom MBeanServerBuilder is set.");
     }
+
+    for (final Map.Entry<Thread, StackTraceElement[]> entry :
+        Thread.getAllStackTraces().entrySet()) {
+      System.out.println(entry.getKey());
+      for (StackTraceElement e : entry.getValue()) {
+        System.out.println("  at " + e);
+      }
+      System.out.println(
+          "-------------------------------------------------------------------------------------");
+    }
+    System.out.println("FIN");
   }
 
   private static boolean isCustomMBeanRegistered() throws MalformedObjectNameException {
