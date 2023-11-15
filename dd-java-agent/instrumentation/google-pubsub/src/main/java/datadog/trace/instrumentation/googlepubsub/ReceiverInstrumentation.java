@@ -14,12 +14,7 @@ public class ReceiverInstrumentation extends Instrumenter.Tracing
     implements Instrumenter.ForSingleType {
 
   public ReceiverInstrumentation() {
-    super("google-pubsub", "google-pubsub-receiver");
-  }
-
-  @Override
-  protected boolean defaultEnabled() {
-    return false;
+    super("google-pubsub");
   }
 
   @Override
