@@ -24,6 +24,13 @@ In contrast to the [IntelliJ IDEA setup](#intellij-idea) the default JVM to buil
 
 There is no Oracle JDK v8 for ARM. ARM users might want to use [Azul's Zulu](/Users/albert.cintora/go/src/github.com/DataDog/dd-trace-java/dd-java-agent/instrumentation/build.gradle) builds of Java 8. On MacOS, they can be installed using `brew tap homebrew/cask-versions && brew install --cask zulu8`. [Amazon Corretto](https://aws.amazon.com/corretto/) builds have also been proven to work.
 
+### GraalVM
+
+To run GraalVM native image tests with `-PtestJvm=GRAALVM17`:
+
+* JDK version GraalVM 17 (https://graalvm.org) must be installed.
+* `JAVA_GRAALVM17_HOME` must point to the JDK-GraalVM-17 location.
+
 # Building
 
 To build the project without running tests run:
